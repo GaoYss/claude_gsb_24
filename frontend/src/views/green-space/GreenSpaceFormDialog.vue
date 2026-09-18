@@ -93,7 +93,44 @@
 
     <template #footer>
       <el-button @click="close">取消</el-button>
-      <el-button type="primary" :loading="submitting" @click="submit">保存</el-button>
+      <el-button type="primary" :loading="submitting" @click="submit()">保存</el-button>
+    </template>
+  </el-dialog>
+
+  <el-dialog
+    v-model="duplicateDialogVisible"
+    title="检测到疑似重复的绿地档案"
+    width="760px"
+    append-to-body
+    destroy-on-close
+  >
+    <el-alert
+      type="warning"
+      show-icon
+      :closable="false"
+      title="同一行政区内已存在名称或位置相近的绿地档案，请核对是否为同一处绿地；如已重复建档，可在台账列表中合并档案。"
+    />
+    <el-table :data="duplicates" border stripe size="small" class="duplicate-table">
+      <el-table-column prop="code" label="绿地编号" width="130" />
+      <el-table-column prop="name" label="绿地名称" min-width="130" show-overflow-tooltip />
+      <el-table-column label="详细地址" min-width="150" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.address || '—' }}</template>
+      </el-table-column>
+      <el-table-column label="养护状态" width="90" align="center">
+        <template #default="{ row }">
+          <EnumTag group="green_space_status" :value="row.status" :label="row.status_label" />
+        </template>
+      </el-table-column>
+      <el-table-column label="相似度" width="80" align="center">
+        <template #default="{ row }">{{ row.similarity }}%</template>
+      </el-table-column>
+      <el-table-column label="命中原因" min-width="110" show-overflow-tooltip>
+        <template #default="{ row }">{{ row.match_reasons.join('、') }}</template>
+      </el-table-column>
+    </el-table>
+    <template #footer>
+      <el-button @click="duplicateDialogVisible = false">返回修改</el-button>
+      <el-button type="warning" :loading="submitting" @click="submit(true)">核对无误，仍要建档</el-button>
     </template>
   </el-dialog>
 </template>
@@ -103,6 +140,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 
 import { greenSpaceApi } from '@/api'
+import EnumTag from '@/components/common/EnumTag.vue'
 import { useEnumOptions } from '@/composables/useEnumOptions'
 
 const emit = defineEmits(['saved'])
@@ -117,6 +155,8 @@ const submitting = ref(false)
 const editingId = ref(null)
 const fieldErrors = ref({})
 const districts = ref([])
+const duplicateDialogVisible = ref(false)
+const duplicates = ref([])
 
 const form = reactive(emptyForm())
 
@@ -151,6 +191,8 @@ function emptyForm() {
 function open(row = null) {
   Object.assign(form, emptyForm())
   fieldErrors.value = {}
+  duplicates.value = []
+  duplicateDialogVisible.value = false
   editingId.value = row?.id ?? null
   if (row) {
     Object.keys(form).forEach((key) => {
@@ -171,23 +213,35 @@ function buildPayload() {
   return payload
 }
 
-async function submit() {
-  const valid = await formRef.value?.validate().catch(() => false)
-  if (!valid) return
+async function submit(forceCreate = false) {
+  if (forceCreate !== true) forceCreate = false
+  if (!forceCreate) {
+    const valid = await formRef.value?.validate().catch(() => false)
+    if (!valid) return
+  }
   submitting.value = true
   fieldErrors.value = {}
   try {
+    const payload = buildPayload()
+    if (forceCreate) payload.allow_duplicate = true
     if (isEdit.value) {
-      await greenSpaceApi.update(editingId.value, buildPayload())
+      await greenSpaceApi.update(editingId.value, payload)
       ElMessage.success('绿地台账已更新')
     } else {
-      await greenSpaceApi.create(buildPayload())
+      await greenSpaceApi.create(payload)
       ElMessage.success('绿地台账创建成功')
     }
+    duplicateDialogVisible.value = false
     emit('saved')
     close()
   } catch (error) {
-    fieldErrors.value = error?.details || {}
+    if (!isEdit.value && error?.code === 40901 && error?.details?.duplicates?.length) {
+      // 疑似重复：展示已存在档案，由用户核对后决定
+      duplicates.value = error.details.duplicates
+      duplicateDialogVisible.value = true
+    } else {
+      fieldErrors.value = error?.details || {}
+    }
   } finally {
     submitting.value = false
   }
@@ -201,3 +255,9 @@ async function loadDistricts() {
 defineExpose({ open })
 onMounted(loadDistricts)
 </script>
+
+<style scoped>
+.duplicate-table {
+  margin-top: 12px;
+}
+</style>

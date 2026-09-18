@@ -42,6 +42,13 @@ class ConflictError(ApiError):
     code = 40900
 
 
+class DuplicateResourceError(ConflictError):
+    """疑似重复记录：details 携带已存在档案列表，供前端展示后由用户确认。"""
+
+    def __init__(self, message="检测到疑似重复的记录", *, details=None):
+        super().__init__(message, code=40901, details=details)
+
+
 class ValidationError(ApiError):
     """字段级校验失败，details 为 {字段: 提示}。"""
 

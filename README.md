@@ -12,7 +12,7 @@
 | 模块 | 页面 | 主要能力 |
 | --- | --- | --- |
 | 养护总览 | `/dashboard` | 绿地与养护总量指标、近半年记录与工时趋势、绿地类型/任务类型/更换原因分布、逾期任务提醒、养护工作量排名 |
-| 绿地台账 | `/green-spaces` | 绿地建档（编号自动生成）、按行政区/类型/等级/状态/关键字检索、档案详情（概览 + 近期任务/记录/更换 + 更换原因汇总）、删除保护 |
+| 绿地台账 | `/green-spaces` | 绿地建档（编号自动生成）、建档查重提示（同行政区名称/位置相近时展示已存在档案）、重复档案合并（任务/记录/更换全部保留）、按行政区/类型/等级/状态/关键字检索、档案详情（概览 + 近期任务/记录/更换 + 更换原因汇总）、删除保护 |
 | 养护任务 | `/tasks` | 任务登记（编号按日生成）、按状态/类型/优先级/绿地/计划日期区间/逾期筛选、状态流转（待执行→进行中→已完成/已取消）、任务详情与执行进度 |
 | 养护记录 | `/records` | 记录录入（可关联任务，也可登记日常巡查）、工时/天气/材料/质量评定、质量分布与工时汇总、记录详情 |
 | 绿植更换 | `/replacements` | 更换登记（植株、类别、规格、数量、原因、原植株状况、供苗单位、单价与金额）、按类别/原因统计与占比、按绿地/日期区间筛选 |
@@ -145,10 +145,11 @@ cd frontend && npm run build && npm run preview
 | GET | `/green-spaces` | 台账列表（`keyword`/`district`/`green_type`/`maintenance_grade`/`status`/`sort`/`order`/分页，返回汇总） |
 | GET | `/green-spaces/options` | 绿地下拉选项（排除已归档） |
 | GET | `/green-spaces/districts` | 行政区及绿地处数 |
-| POST | `/green-spaces` | 新增绿地（编号可留空自动生成） |
+| POST | `/green-spaces` | 新增绿地（编号可留空自动生成；同行政区名称/位置相近时返回 40901 与已存在档案列表，确认后带 `allow_duplicate=true` 强制建档） |
 | GET | `/green-spaces/{id}` | 绿地详情 |
 | GET | `/green-spaces/{id}/profile` | 绿地档案（概览统计 + 近期任务/记录/更换） |
 | PUT | `/green-spaces/{id}` | 更新绿地（编号不可改） |
+| POST | `/green-spaces/{id}/merge` | 合并重复档案：`source_id` 的任务/记录/更换全部转移到本档案，源档案删除 |
 | DELETE | `/green-spaces/{id}?force=true` | 删除绿地（有关联数据时需 `force`） |
 | GET/POST | `/maintenance-tasks` | 任务列表 / 登记任务（`status`/`task_type`/`priority`/`green_space_id`/`date_from`/`date_to`/`overdue`） |
 | GET/PUT/DELETE | `/maintenance-tasks/{id}` | 任务详情（含执行进度与记录） / 更新 / 删除（有记录时需 `force`，记录会保留但解除关联） |

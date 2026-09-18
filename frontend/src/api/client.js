@@ -20,6 +20,9 @@ const http = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
+// 40901 = 疑似重复：由表单弹窗展示已存在档案，不再重复弹全局错误提示
+const SILENT_ERROR_CODES = new Set([40901])
+
 function toApiError(body, status) {
   return new ApiError(body?.message || '请求失败，请稍后重试', {
     code: body?.code ?? 0,
@@ -34,7 +37,7 @@ http.interceptors.response.use(
     if (body && typeof body === 'object' && 'success' in body) {
       if (body.success) return body.data
       const error = toApiError(body, response.status)
-      ElMessage.error(error.message)
+      if (!SILENT_ERROR_CODES.has(error.code)) ElMessage.error(error.message)
       return Promise.reject(error)
     }
     return body
@@ -43,7 +46,7 @@ http.interceptors.response.use(
     const status = error.response?.status ?? 0
     const apiError = toApiError(error.response?.data, status)
     // 422 由表单逐字段提示，避免重复弹出
-    if (status !== 422) {
+    if (status !== 422 && !SILENT_ERROR_CODES.has(apiError.code)) {
       ElMessage.error(apiError.message)
     }
     return Promise.reject(apiError)

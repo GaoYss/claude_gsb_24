@@ -1,9 +1,12 @@
 """绿地台账业务逻辑。"""
 
+import re
+from difflib import SequenceMatcher
+
 from sqlalchemy import and_, func, or_
 
 from ..constants import ENUM_GROUPS, GREEN_SPACE_STATUS
-from ..errors import ConflictError
+from ..errors import BadRequestError, ConflictError
 from ..extensions import db
 from ..models import GreenSpace, MaintenanceRecord, MaintenanceTask, PlantReplacement
 from ..models.maintenance_task import OPEN_STATUSES
@@ -12,6 +15,32 @@ from ..utils.numbers import to_float
 from ..utils.sorting import parse_sort
 from .base_service import BaseService
 from .code_generator import year_prefix
+
+# 名称/地址相似度阈值：强匹配直接判重，弱匹配需名称与地址同时相近
+EXACT_MATCH = 0.999
+NAME_STRONG_MATCH = 0.75
+NAME_WEAK_MATCH = 0.5
+ADDRESS_WEAK_MATCH = 0.6
+
+
+def _normalize_text(value):
+    """忽略空白与大小写，用于名称/地址的宽松比较。"""
+
+    return re.sub(r"\s+", "", (value or "")).lower()
+
+
+def _text_similarity(first, second):
+    """0~1 的文本相似度；短文本被长文本包含时视为高度相似。"""
+
+    if not first or not second:
+        return 0.0
+    if first == second:
+        return 1.0
+    ratio = SequenceMatcher(None, first, second).ratio()
+    shorter, longer = sorted((first, second), key=len)
+    if len(shorter) >= 2 and shorter in longer:
+        ratio = max(ratio, 0.85)
+    return ratio
 
 
 class GreenSpaceService(BaseService):
@@ -243,6 +272,110 @@ class GreenSpaceService(BaseService):
             "recent_tasks": [item.to_dict() for item in recent_tasks],
             "recent_records": [item.to_dict() for item in recent_records],
             "recent_replacements": [item.to_dict() for item in recent_replacements],
+        }
+
+    # ------------------------------------------------------------ 查重与合并
+    @classmethod
+    def find_duplicates(cls, name, district, address, exclude_id=None, limit=5):
+        """同一行政区内名称或位置相近的绿地档案，按相似度降序返回。
+
+        判定规则（命中任一即视为疑似重复）：
+        - 名称相同或高度相似；
+        - 地址相同且名称有一定相似度；
+        - 名称与地址同时中等程度相近。
+        """
+
+        norm_name = _normalize_text(name)
+        norm_address = _normalize_text(address)
+        if not norm_name or not district:
+            return []
+
+        query = db.session.query(GreenSpace).filter(GreenSpace.district == district)
+        if exclude_id is not None:
+            query = query.filter(GreenSpace.id != exclude_id)
+
+        matches = []
+        for candidate in query.all():
+            name_ratio = _text_similarity(norm_name, _normalize_text(candidate.name))
+            candidate_address = _normalize_text(candidate.address)
+            address_ratio = (
+                _text_similarity(norm_address, candidate_address)
+                if norm_address and candidate_address
+                else 0.0
+            )
+            reasons = []
+            if name_ratio >= EXACT_MATCH:
+                reasons.append("名称相同")
+            elif name_ratio >= NAME_STRONG_MATCH:
+                reasons.append("名称高度相似")
+            if address_ratio >= EXACT_MATCH and name_ratio >= NAME_WEAK_MATCH - 0.1:
+                reasons.append("地址相同")
+            if (
+                not reasons
+                and name_ratio >= NAME_WEAK_MATCH
+                and address_ratio >= ADDRESS_WEAK_MATCH
+            ):
+                reasons.append("名称与地址相近")
+            if not reasons:
+                continue
+            item = candidate.to_dict()
+            item["match_reasons"] = reasons
+            item["similarity"] = round(max(name_ratio, address_ratio) * 100)
+            matches.append(item)
+
+        matches.sort(key=lambda item: item["similarity"], reverse=True)
+        return matches[:limit]
+
+    # 合并时目标档案为空的字段，用源档案的值补全
+    MERGE_FILL_FIELDS = (
+        "address",
+        "manager",
+        "contact_phone",
+        "plant_summary",
+        "established_date",
+        "remark",
+    )
+
+    @classmethod
+    def merge(cls, target_id, source_id):
+        """将 source 档案合并进 target：关联业务数据全部转移，源档案删除。"""
+
+        if target_id == source_id:
+            raise BadRequestError("不能将绿地与自身合并")
+        target = cls.get(target_id)
+        source = cls.get(source_id)
+
+        moved = {}
+        for key, model in (
+            ("maintenance_task", MaintenanceTask),
+            ("maintenance_record", MaintenanceRecord),
+            ("plant_replacement", PlantReplacement),
+        ):
+            moved[key] = (
+                db.session.query(model)
+                .filter(model.green_space_id == source.id)
+                .update({"green_space_id": target.id}, synchronize_session=False)
+            )
+
+        filled_fields = []
+        for field in cls.MERGE_FILL_FIELDS:
+            current = getattr(target, field)
+            if current is not None and (not isinstance(current, str) or current.strip()):
+                continue
+            incoming = getattr(source, field)
+            if incoming is None or (isinstance(incoming, str) and not incoming.strip()):
+                continue
+            setattr(target, field, incoming)
+            filled_fields.append(field)
+
+        merged_from = {"id": source.id, "code": source.code, "name": source.name}
+        db.session.delete(source)
+        db.session.commit()
+        return {
+            "target": target.to_dict(detail=True),
+            "merged_from": merged_from,
+            "moved": moved,
+            "filled_fields": filled_fields,
         }
 
     # ------------------------------------------------------------ 写入

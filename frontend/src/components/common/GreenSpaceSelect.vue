@@ -30,6 +30,8 @@ const props = defineProps({
   preset: { type: Object, default: null },
   placeholder: { type: String, default: '请选择绿地' },
   disabled: { type: Boolean, default: false },
+  /** 选项中排除的绿地 id（如合并场景的源档案） */
+  excludeId: { type: [Number, String], default: null },
 })
 
 const emit = defineEmits(['update:modelValue'])
@@ -39,8 +41,10 @@ const loading = ref(false)
 
 function merge(items) {
   const map = new Map()
-  items.filter(Boolean).forEach((item) => map.set(item.id, item))
-  if (props.preset) map.set(props.preset.id, props.preset)
+  items
+    .filter((item) => item && item.id !== props.excludeId)
+    .forEach((item) => map.set(item.id, item))
+  if (props.preset && props.preset.id !== props.excludeId) map.set(props.preset.id, props.preset)
   options.value = [...map.values()]
 }
 

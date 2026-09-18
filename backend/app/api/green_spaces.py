@@ -2,6 +2,7 @@
 
 from flask import Blueprint, request
 
+from ..errors import BadRequestError, DuplicateResourceError
 from ..schemas import green_space_filters, validate_green_space
 from ..services import GreenSpaceService
 from ..utils.pagination import paginate, parse_page_args
@@ -38,7 +39,20 @@ def districts():
 
 @bp.post("/green-spaces")
 def create_green_space():
-    payload = validate_green_space(json_body())
+    """建档提交：同一行政区内存在名称/位置相近档案时返回 409 + 已存在档案列表，
+    前端展示后由用户确认；确认无误可带 allow_duplicate=true 强制建档。"""
+
+    body = json_body()
+    payload = validate_green_space(body)
+    if not body.get("allow_duplicate"):
+        duplicates = GreenSpaceService.find_duplicates(
+            payload.get("name"), payload.get("district"), payload.get("address")
+        )
+        if duplicates:
+            raise DuplicateResourceError(
+                f"同一行政区内已存在 {len(duplicates)} 处名称或位置相近的绿地档案，请核对是否重复建档",
+                details={"duplicates": duplicates},
+            )
     space = GreenSpaceService.create(payload)
     return created(space.to_dict(detail=True), message="绿地台账创建成功")
 
@@ -69,3 +83,20 @@ def delete_green_space(space_id):
     force = query_flag("force")
     result = GreenSpaceService.delete(space_id, force=force)
     return ok(result, message="绿地台账及其关联数据已删除" if force else "绿地台账已删除")
+
+
+@bp.post("/green-spaces/<int:space_id>/merge")
+def merge_green_space(space_id):
+    """合并重复档案：source_id 所指绿地的任务/记录/更换全部转移到本档案，
+    源档案随后删除，原有业务数据全部保留。"""
+
+    source_id = json_body().get("source_id")
+    if not isinstance(source_id, int) or isinstance(source_id, bool):
+        raise BadRequestError("请在请求体中指定要合并的绿地档案 source_id（整数）")
+    result = GreenSpaceService.merge(space_id, source_id)
+    moved = result["moved"]
+    message = (
+        "绿地档案合并完成，已转移养护任务 {maintenance_task} 项、养护记录 "
+        "{maintenance_record} 条、绿植更换 {plant_replacement} 条"
+    ).format(**moved)
+    return ok(result, message=message)

@@ -76,7 +76,8 @@ def test_list_supports_keyword_and_enum_filters(api):
 
 def test_list_supports_sorting_and_pagination(api):
     api.post("/api/v1/green-spaces", space_payload(name="小绿地", area_sqm=100))
-    api.post("/api/v1/green-spaces", space_payload(name="大绿地", area_sqm=9000))
+    api.post("/api/v1/green-spaces", space_payload(name="大绿地", area_sqm=9000,
+                                                  address="文晖路 1 号"))
 
     data = api.data(api.get("/api/v1/green-spaces", sort="area_sqm", order="desc", page_size=1))
     assert data["items"][0]["name"] == "大绿地"
