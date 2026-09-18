@@ -80,10 +80,11 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="190" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="goDetail(row)">档案</el-button>
             <el-button link type="primary" @click="formDialog.open(row)">编辑</el-button>
+            <el-button link type="warning" @click="mergeDialog.open(row)">合并</el-button>
             <el-button link type="danger" @click="remove(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -103,6 +104,7 @@
     </div>
 
     <GreenSpaceFormDialog ref="formDialog" @saved="onSaved" />
+    <GreenSpaceMergeDialog ref="mergeDialog" @merged="onSaved" />
   </div>
 </template>
 
@@ -119,9 +121,11 @@ import { useListQuery } from '@/composables/useListQuery'
 import { formatArea, formatDate } from '@/utils/format'
 
 import GreenSpaceFormDialog from './GreenSpaceFormDialog.vue'
+import GreenSpaceMergeDialog from './GreenSpaceMergeDialog.vue'
 
 const router = useRouter()
 const formDialog = ref(null)
+const mergeDialog = ref(null)
 const districts = ref([])
 
 const { options: typeOptions } = useEnumOptions('green_space_type')

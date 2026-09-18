@@ -38,7 +38,12 @@ def districts():
 
 @bp.post("/green-spaces")
 def create_green_space():
+    """建档：同行政区内存在名称/位置相近档案时返回 40901 与已存在档案列表，
+    前端确认后带 allow_duplicate=true 重试方可继续创建。"""
+
     payload = validate_green_space(json_body())
+    if not query_flag("allow_duplicate"):
+        GreenSpaceService.ensure_not_duplicate(payload)
     space = GreenSpaceService.create(payload)
     return created(space.to_dict(detail=True), message="绿地台账创建成功")
 
@@ -58,8 +63,19 @@ def green_space_profile(space_id):
 @bp.put("/green-spaces/<int:space_id>")
 def update_green_space(space_id):
     payload = validate_green_space(json_body())
+    if not query_flag("allow_duplicate"):
+        GreenSpaceService.ensure_not_duplicate(payload, exclude_id=space_id)
     space = GreenSpaceService.update(space_id, payload)
     return ok(space.to_dict(detail=True), message="绿地台账已更新")
+
+
+@bp.post("/green-spaces/<int:space_id>/merge")
+def merge_green_space(space_id):
+    """合并重复档案：source_id 绿地的任务/记录/更换全部并入本档案，source 删除。"""
+
+    source_id = json_body().get("source_id")
+    result = GreenSpaceService.merge(space_id, source_id)
+    return ok(result, message="绿地档案合并完成，原档案的任务与记录已全部保留")
 
 
 @bp.delete("/green-spaces/<int:space_id>")

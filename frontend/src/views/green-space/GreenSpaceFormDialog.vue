@@ -93,19 +93,32 @@
 
     <template #footer>
       <el-button @click="close">取消</el-button>
-      <el-button type="primary" :loading="submitting" @click="submit">保存</el-button>
+      <el-button type="primary" :loading="submitting" @click="submit()">保存</el-button>
     </template>
   </el-dialog>
+
+  <DuplicateAlertDialog
+    ref="duplicateDialog"
+    @confirm="submit(true)"
+    @merge="mergeInto"
+    @view="viewDuplicate"
+  />
 </template>
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 import { greenSpaceApi } from '@/api'
+import { DUPLICATE_WARNING_CODE } from '@/api/client'
 import { useEnumOptions } from '@/composables/useEnumOptions'
 
+import DuplicateAlertDialog from './DuplicateAlertDialog.vue'
+
 const emit = defineEmits(['saved'])
+
+const router = useRouter()
 
 const { options: typeOptions } = useEnumOptions('green_space_type')
 const { options: gradeOptions } = useEnumOptions('maintenance_grade')
@@ -117,6 +130,7 @@ const submitting = ref(false)
 const editingId = ref(null)
 const fieldErrors = ref({})
 const districts = ref([])
+const duplicateDialog = ref(null)
 
 const form = reactive(emptyForm())
 
@@ -171,26 +185,63 @@ function buildPayload() {
   return payload
 }
 
-async function submit() {
-  const valid = await formRef.value?.validate().catch(() => false)
-  if (!valid) return
+async function submit(forceAllow = false) {
+  if (!forceAllow) {
+    const valid = await formRef.value?.validate().catch(() => false)
+    if (!valid) return
+  }
   submitting.value = true
   fieldErrors.value = {}
   try {
+    const params = forceAllow ? { allow_duplicate: true } : undefined
     if (isEdit.value) {
-      await greenSpaceApi.update(editingId.value, buildPayload())
+      await greenSpaceApi.update(editingId.value, buildPayload(), params)
       ElMessage.success('绿地台账已更新')
     } else {
-      await greenSpaceApi.create(buildPayload())
+      await greenSpaceApi.create(buildPayload(), params)
       ElMessage.success('绿地台账创建成功')
     }
     emit('saved')
     close()
   } catch (error) {
-    fieldErrors.value = error?.details || {}
+    if (error?.code === DUPLICATE_WARNING_CODE && error.details?.duplicates?.length) {
+      // 疑似重复：展示已存在档案，由用户决定继续、取消或合并
+      duplicateDialog.value.open(error.details.duplicates, isEdit.value ? 'edit' : 'create')
+    } else {
+      fieldErrors.value = error?.details || {}
+    }
   } finally {
     submitting.value = false
   }
+}
+
+async function mergeInto(duplicate) {
+  try {
+    await ElMessageBox.confirm(
+      `合并后，当前绿地「${form.name}」的全部养护任务、记录与绿植更换将转移至` +
+        `「${duplicate.name}」，当前档案将被删除且不可恢复。确认合并？`,
+      '合并确认',
+      { type: 'warning', confirmButtonText: '确认合并', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  try {
+    await greenSpaceApi.merge(duplicate.id, editingId.value)
+    ElMessage.success(`已合并至「${duplicate.name}」，原有任务与记录全部保留`)
+    duplicateDialog.value.close()
+    emit('saved')
+    close()
+    router.push({ name: 'green-space-detail', params: { id: duplicate.id } })
+  } catch {
+    // 合并失败由请求层统一提示，保留对话框便于重试
+  }
+}
+
+function viewDuplicate(duplicate) {
+  duplicateDialog.value.close()
+  close()
+  router.push({ name: 'green-space-detail', params: { id: duplicate.id } })
 }
 
 async function loadDistricts() {

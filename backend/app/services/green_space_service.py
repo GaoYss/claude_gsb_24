@@ -1,9 +1,11 @@
 """绿地台账业务逻辑。"""
 
+import re
+
 from sqlalchemy import and_, func, or_
 
 from ..constants import ENUM_GROUPS, GREEN_SPACE_STATUS
-from ..errors import ConflictError
+from ..errors import BadRequestError, ConflictError, DuplicateWarningError
 from ..extensions import db
 from ..models import GreenSpace, MaintenanceRecord, MaintenanceTask, PlantReplacement
 from ..models.maintenance_task import OPEN_STATUSES
@@ -245,7 +247,146 @@ class GreenSpaceService(BaseService):
             "recent_replacements": [item.to_dict() for item in recent_replacements],
         }
 
+    # ------------------------------------------------------------ 重复检测
+    # 名称/地址归一化后做相似度判定：完全相等、互相包含直接命中，
+    # 否则按字符二元组 Jaccard 重合度阈值判定（地址噪声更大，阈值更高）。
+    NAME_SIMILARITY = 0.5
+    ADDRESS_SIMILARITY = 0.6
+    _NORMALIZE_PATTERN = re.compile(r"[\s·,，。.、\-—_()（）【】\[\]#＃号]+")
+
+    @classmethod
+    def _normalize(cls, text):
+        if not text:
+            return ""
+        return cls._NORMALIZE_PATTERN.sub("", str(text)).lower()
+
+    @staticmethod
+    def _bigrams(text):
+        if len(text) < 2:
+            return {text} if text else set()
+        return {text[i:i + 2] for i in range(len(text) - 1)}
+
+    @classmethod
+    def _similar(cls, left, right, threshold):
+        if not left or not right:
+            return False
+        if left == right:
+            return True
+        if len(left) >= 2 and len(right) >= 2 and (left in right or right in left):
+            return True
+        left_grams, right_grams = cls._bigrams(left), cls._bigrams(right)
+        if not left_grams or not right_grams:
+            return False
+        return len(left_grams & right_grams) / len(left_grams | right_grams) >= threshold
+
+    @classmethod
+    def _related_counts(cls, space_id):
+        """疑似重复提示中展示的关联数据量。"""
+
+        return {
+            "task_count": db.session.query(func.count(MaintenanceTask.id))
+            .filter(MaintenanceTask.green_space_id == space_id).scalar() or 0,
+            "record_count": db.session.query(func.count(MaintenanceRecord.id))
+            .filter(MaintenanceRecord.green_space_id == space_id).scalar() or 0,
+            "replacement_count": db.session.query(func.count(PlantReplacement.id))
+            .filter(PlantReplacement.green_space_id == space_id).scalar() or 0,
+        }
+
+    @classmethod
+    def find_duplicates(cls, *, name, district, address, exclude_id=None, limit=5):
+        """同一行政区内名称或位置相近的绿地档案，按匹配原因返回。"""
+
+        norm_name = cls._normalize(name)
+        norm_address = cls._normalize(address)
+        if not norm_name or not district:
+            return []
+        query = db.session.query(GreenSpace).filter(GreenSpace.district == district)
+        if exclude_id is not None:
+            query = query.filter(GreenSpace.id != exclude_id)
+        matches = []
+        for candidate in query.order_by(GreenSpace.code.asc()).all():
+            reasons = []
+            if cls._similar(norm_name, cls._normalize(candidate.name), cls.NAME_SIMILARITY):
+                reasons.append("name")
+            if norm_address and cls._similar(
+                norm_address, cls._normalize(candidate.address), cls.ADDRESS_SIMILARITY
+            ):
+                reasons.append("address")
+            if reasons:
+                data = candidate.to_dict()
+                data["match_reasons"] = reasons
+                data["statistics"] = cls._related_counts(candidate.id)
+                matches.append(data)
+        return matches[:limit]
+
+    @classmethod
+    def ensure_not_duplicate(cls, payload, exclude_id=None):
+        """建档/更新前的重复拦截：发现疑似重复档案时抛出 40901，由前端确认。"""
+
+        if exclude_id is not None:
+            current = cls.get(exclude_id)
+            unchanged = (
+                current.name == payload.get("name")
+                and current.district == payload.get("district")
+                and (current.address or "") == (payload.get("address") or "")
+            )
+            if unchanged:
+                return
+        duplicates = cls.find_duplicates(
+            name=payload.get("name"),
+            district=payload.get("district"),
+            address=payload.get("address"),
+            exclude_id=exclude_id,
+        )
+        if duplicates:
+            raise DuplicateWarningError(
+                f"所属行政区内已存在 {len(duplicates)} 处名称或位置相近的绿地档案，"
+                "请确认是否重复建档",
+                details={"duplicates": duplicates},
+            )
+
     # ------------------------------------------------------------ 写入
+    @classmethod
+    def merge(cls, target_id, source_id):
+        """合并重复档案：source 的全部任务/记录/更换迁移到 target 后删除 source。
+
+        关联数据只做归属转移，不删任何业务记录；target 备注中追加合并说明留痕。
+        """
+
+        if not source_id:
+            raise BadRequestError("请选择需要合并的绿地档案")
+        if int(target_id) == int(source_id):
+            raise BadRequestError("不能将绿地档案与自身合并")
+        target = cls.get(target_id)
+        source = cls.get(source_id)
+
+        moved = {}
+        for model, key in (
+            (MaintenanceTask, "maintenance_task"),
+            (MaintenanceRecord, "maintenance_record"),
+            (PlantReplacement, "plant_replacement"),
+        ):
+            moved[key] = (
+                db.session.query(model)
+                .filter(model.green_space_id == source.id)
+                .update({"green_space_id": target.id}, synchronize_session=False)
+            )
+
+        note = (
+            f"已于 {today():%Y-%m-%d} 合并重复档案 {source.code}「{source.name}」"
+            f"（{source.district}），其养护任务、记录与绿植更换全部并入本档案"
+        )
+        target.remark = f"{target.remark}\n{note}" if target.remark else note
+
+        merged_brief = {"id": source.id, "code": source.code, "name": source.name}
+        db.session.delete(source)
+        db.session.commit()
+        return {
+            "target": target.to_dict(detail=True),
+            "merged": merged_brief,
+            "moved": moved,
+        }
+
     @classmethod
     def delete(cls, obj_id, force=False):
         space = cls.get(obj_id)

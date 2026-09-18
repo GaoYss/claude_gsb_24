@@ -14,6 +14,9 @@ export class ApiError extends Error {
   }
 }
 
+/** 疑似重复警告：由表单弹出专用确认对话框，不再全局报错。 */
+export const DUPLICATE_WARNING_CODE = 40901
+
 const http = axios.create({
   baseURL: API_BASE_URL,
   timeout: 20000,
@@ -42,8 +45,8 @@ http.interceptors.response.use(
   (error) => {
     const status = error.response?.status ?? 0
     const apiError = toApiError(error.response?.data, status)
-    // 422 由表单逐字段提示，避免重复弹出
-    if (status !== 422) {
+    // 422 由表单逐字段提示，40901 由表单弹出疑似重复确认框，均不再全局弹出
+    if (status !== 422 && apiError.code !== DUPLICATE_WARNING_CODE) {
       ElMessage.error(apiError.message)
     }
     return Promise.reject(apiError)

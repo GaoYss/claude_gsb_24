@@ -42,6 +42,13 @@ class ConflictError(ApiError):
     code = 40900
 
 
+class DuplicateWarningError(ConflictError):
+    """疑似重复数据：details 携带 duplicates 列表，由前端展示后决定继续或放弃。"""
+
+    def __init__(self, message="发现疑似重复的数据", *, details=None):
+        super().__init__(message, status_code=409, code=40901, details=details)
+
+
 class ValidationError(ApiError):
     """字段级校验失败，details 为 {字段: 提示}。"""
 

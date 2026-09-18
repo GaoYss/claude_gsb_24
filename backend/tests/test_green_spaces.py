@@ -32,7 +32,8 @@ def test_create_keeps_custom_code_and_rejects_duplicate(api):
     first = api.data(api.post("/api/v1/green-spaces", space_payload(code="GS-XH-0007")), 201)
     assert first["code"] == "GS-XH-0007"
 
-    response = api.post("/api/v1/green-spaces", space_payload(name="重复编号绿地", code="GS-XH-0007"))
+    response = api.post("/api/v1/green-spaces", space_payload(
+        name="重复编号绿地", code="GS-XH-0007", address="莫干山路 66 号"))
     assert response.status_code == 409
     assert "已存在" in response.get_json()["message"]
 
@@ -76,7 +77,8 @@ def test_list_supports_keyword_and_enum_filters(api):
 
 def test_list_supports_sorting_and_pagination(api):
     api.post("/api/v1/green-spaces", space_payload(name="小绿地", area_sqm=100))
-    api.post("/api/v1/green-spaces", space_payload(name="大绿地", area_sqm=9000))
+    api.post("/api/v1/green-spaces", space_payload(name="大绿地", area_sqm=9000,
+                                                  address="体育场路 218 号"))
 
     data = api.data(api.get("/api/v1/green-spaces", sort="area_sqm", order="desc", page_size=1))
     assert data["items"][0]["name"] == "大绿地"
